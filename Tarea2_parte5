@@ -1,0 +1,125 @@
+####5 Selecciona alg ́un experimento que te parezca interesante de micro-arreglos
+#de expresi ́on v ́ıa la herramienta Geo2R de NCBI. Realiza un an ́alisis de
+#expresíon diferencial entre al menos dos grupos experimentales que se re-
+#porten en el art ́ıculo correspondiente. Genera el c ́odigo para realizar todos
+#los an ́alisis as como las gr ́aficas y almac ́enalo en tu cuenta de Github.
+#Comenta el c ́odigo de cade secci ́on para que ne quede claro que entiendes
+#cada paso par ainferir la red. Manda la liga de ese c ́odigo. Genera las ta-
+#blas en formato csv de genes diferencialmente expresados con las siguientes
+#condiciones: logFC de al menos 2 y p-value inferior a 0.1.
+#   Differential expression analysis with limma
+
+BiocManager::install("GEOquery")
+
+library(GEOquery)
+library(limma)          #Instalar y cargar librerias necesarias
+library(umap)
+
+# load series and platform data from GEO
+
+gset <- getGEO("GSE61326", GSEMatrix =TRUE, AnnotGPL=TRUE)
+if (length(gset) > 1) idx <- grep("GPL6247", attr(gset, "names")) else idx <- 1
+gset <- gset[[idx]]
+
+# make proper column names to match toptable 
+fvarLabels(gset) <- make.names(fvarLabels(gset))
+
+# group membership for all samples
+gsms <- "00000000111111111222222222"
+sml <- strsplit(gsms, split="")[[1]]
+
+# log2 transformation
+ex <- exprs(gset)
+qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+LogC <- (qx[5] > 100) ||
+  (qx[6]-qx[1] > 50 && qx[2] > 0)
+if (LogC) { ex[which(ex <= 0)] <- NaN
+exprs(gset) <- log2(ex) }
+
+# assign samples to groups and set up design matrix
+gs <- factor(sml)
+groups <- make.names(c("Low D","Control","High D"))
+levels(gs) <- groups
+gset$group <- gs
+design <- model.matrix(~group + 0, gset)
+colnames(design) <- levels(gs)
+
+fit <- lmFit(gset, design)  # fit linear model
+
+# set up contrasts of interest and recalculate model coefficients
+cts <- paste(groups, c(tail(groups, -1), head(groups, 1)), sep="-")
+cont.matrix <- makeContrasts(contrasts=cts, levels=design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+
+# compute statistics and table of top significant genes
+fit2 <- eBayes(fit2, 0.01)
+tT <- topTable(fit2, adjust="fdr", sort.by="B", number=250)
+
+tT <- subset(tT, select=c("ID","adj.P.Val","P.Value","F","Gene.symbol","Gene.title"))
+write.table(tT, file=stdout(), row.names=F, sep="\t") #Esta parte genera una tabla que contiene los analisis estadisticos
+#de los genes y su significancia (los mas imortantes)
+
+# Visualize and quality control test results.
+# Build histogram of P-values for all genes. Normal test
+# assumption is that most genes are not differentially expressed.
+tT2 <- topTable(fit2, adjust="fdr", sort.by="B", number=Inf)
+hist(tT2$adj.P.Val, col = "grey", border = "white", xlab = "P-adj",
+     ylab = "Number of genes", main = "P-adj value distribution")#se genera un histograma para ver la  distribucion de los valores del ajuste del p-value
+
+# summarize test results as "up", "down" or "not expressed"
+dT <- decideTests(fit2, adjust.method="fdr", p.value=0.05) #p-value menor a .1, aqui se estableecen los parametros para la significancia
+#de la expresion de los genes
+
+# Venn diagram of results
+vennDiagram(dT, circle.col=palette())
+
+# create Q-Q plot for t-statistic
+t.good <- which(!is.na(fit2$F)) # filter out bad probes
+qqt(fit2$t[t.good], fit2$df.total[t.good], main="Moderated t statistic")#qq plot de las muestras reales y las teoricas
+
+# volcano plot (log P-value vs log fold change)
+colnames(fit2) # list contrast names
+ct <- 1        # choose contrast of interest
+volcanoplot(fit2, coef=ct, main=colnames(fit2)[ct], pch=20,
+            highlight=length(which(dT[,ct]!=0)), names=rep('+', nrow(fit2))) #Esta parte genera un volcano plor donde se pueden
+#ver mejor la expresion diferencial de los genes del analisis
+
+# MD plot (log fold change vs mean log expression)
+# highlight statistically significant (p-adj < 0.05) probes
+plotMD(fit2, column=ct, status=dT[,ct], legend=F, pch=20, cex=1)
+abline(h=0)
+
+################################################################
+# General expression data analysis
+ex <- exprs(gset)
+
+# box-and-whisker plot
+ord <- order(gs)  # order samples by group
+palette(c("#1B9E77", "#7570B3", "#E7298A", "#E6AB02", "#D95F02",
+          "#66A61E", "#A6761D", "#B32424", "#B324B3", "#666666")) #estas son las muestras que se usaron en el analisis que se van a evaluar en las condiciones
+
+par(mar=c(7,4,2,1))
+title <- paste ("GSE61326", "/", annotation(gset), sep ="")
+boxplot(ex[,ord], boxwex=0.6, notch=T, main=title, outline=FALSE, las=2, col=gs[ord])
+legend("topleft", groups, fill=palette(), bty="n") #boxplot
+
+# expression value distribution
+par(mar=c(4,4,2,1))
+title <- paste ("GSE61326", "/", annotation(gset), " value distribution", sep ="")
+plotDensities(ex, group=gs, main=title, legend ="topright")# esta grafica muestra el valor de la ditribucion de GSE61326
+
+# UMAP plot (dimensionality reduction)
+ex <- na.omit(ex) # eliminate rows with NAs
+ex <- ex[!duplicated(ex), ]  # remove duplicates
+ump <- umap(t(ex), n_neighbors = 11, random_state = 123)
+par(mar=c(3,3,2,6), xpd=TRUE)
+plot(ump$layout, main="UMAP plot, nbrs=11", xlab="", ylab="", col=gs, pch=20, cex=1.5)
+legend("topright", inset=c(-0.15,0), legend=levels(gs), pch=20,
+       col=1:nlevels(gs), title="Group", pt.cex=1.5)
+library("maptools")  # point labels without overlaps
+pointLabel(ump$layout, labels = rownames(ump$layout), method="SANN", cex=0.6)
+#Esta grafica un UMAP plot que resume o reduce los datos del analisis en una grafica pequeña que muestra
+#a los genes de los grupos en dos dimensiones experimentales
+
+# mean-variance trend, helps to see if precision weights are needed
+plotSA(fit2, main="Mean variance trend, GSE61326")
